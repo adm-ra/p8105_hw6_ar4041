@@ -114,7 +114,7 @@ This plot shows cities in order of increasing odds that crimes will be resolved 
 
 ## Problem 2
 
-Reading in birthweight data
+Reading in birthweight data, tidying
 ```{r}
 baby_df = 
   read_csv("./data/birthweight.csv") %>% 
@@ -146,15 +146,17 @@ baby_df =
 
 Creating an initial model 
 ```{r message=FALSE}
-model_test = lm(bwt ~ gaweeks, data = baby_df)
+hypothesis_mod = lm(bwt ~ gaweeks + ppbmi + smoken + momage, data = baby_df)
 ```
+This model was chosen based on a hypothesis that mother's health would have a significant effect on birthweight. Factors included were number of cigarettes smoked, mother's BMI pre-pregnancy, and mother's age at delivery.
+
 
 Making a prediction vs residual plot
 ```{r message=FALSE}
 pred_resid_plot = 
   baby_df %>% 
-    add_predictions(model_test) %>%
-    add_residuals(model_test) %>% 
+    add_predictions(hypothesis_mod) %>%
+    add_residuals(hypothesis_mod) %>% 
     ggplot(aes(x = pred, y = resid)) + 
     geom_point() +
     labs(
@@ -175,13 +177,13 @@ cv_df =
 cv_df = 
   cv_df %>% 
   mutate(
-    model_test_1  = map(train, ~lm(bwt ~ gaweeks, data = .x)),
-    model_test_2 = map(train, ~lm(bwt ~  blength + gaweeks, data = .x)),
-    model_test_3  = map(train, ~lm(bwt ~ bhead * blength * babysex, data = .x))) %>% 
+    hypothesis_mod  = map(train, ~lm(bwt ~ gaweeks + ppbmi + smoken + momage, data = .x)),
+    length_mod = map(train, ~lm(bwt ~  blength + gaweeks, data = .x)),
+    interaction_mod  = map(train, ~lm(bwt ~ bhead * blength * babysex, data = .x))) %>% 
   mutate(
-    rmse_test_1 = map2_dbl(model_test_1, test, ~rmse(model = .x, data = .y)),
-    rmse_test_2 = map2_dbl(model_test_2, test, ~rmse(model = .x, data = .y)),
-    rmse_test_3 = map2_dbl(model_test_3, test, ~rmse(model = .x, data = .y)))
+    rmse_hypothesis = map2_dbl(hypothesis_mod, test, ~rmse(model = .x, data = .y)),
+    rmse_length = map2_dbl(length_mod, test, ~rmse(model = .x, data = .y)),
+    rmse_interaction = map2_dbl(interaction_mod, test, ~rmse(model = .x, data = .y)))
 
 rmse_plot = 
   cv_df %>% 
@@ -198,6 +200,8 @@ rmse_plot =
 
 rmse_plot
 ```
+Comparing in terms of cross-validated prediction error, it appears that the hypothesized model does not perform as well as the length or interaction models (most rmse values are significantly higher than the other two models).
+
 
 # Problem 3
 
@@ -214,14 +218,103 @@ weather_df =
     tmin = tmin / 10,
     tmax = tmax / 10) %>%
   select(name, id, everything())
+```
 
-bootstrap_results = 
+Creating the log of betas plot
+```{r}
+bootstrap_beta_plot = 
   weather_df %>% 
-    bootstrap(n = 1000, id = "id") %>% 
+    bootstrap(n = 5000, id = "id") %>% 
    mutate(
     models = map(strap, ~ lm(tmax ~ tmin, data = .x)),
     results = map(models, broom::tidy)) %>% 
-  select(results) %>% 
-  unnest(results)
+  select(id, results) %>% 
+  unnest(results) %>%
+  select(id, term, estimate) %>% 
+  group_by(id) %>% 
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  ) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    beta_log = log(intercept * tmin)
+  ) %>% 
+  ggplot(aes(x = beta_log)) + 
+  geom_density() +
+   labs(
+      x = "log(B0*B1)")
+
+bootstrap_beta_plot
+```
+
+This plot shows that most values are concentrated between 2 and 2.025. 
+
+Getting the R squared plot
+```{r}
+bootstrap_r_plot = 
+  weather_df %>% 
+    bootstrap(n = 5000, id = "id") %>% 
+   mutate(
+    models = map(strap, ~ lm(tmax ~ tmin, data = .x)),
+    results = map(models, broom::glance)) %>% 
+  select(id, results) %>% 
+  unnest(results) %>% 
+  ggplot(aes(x = r.squared)) + 
+  geom_density() +
+   labs(
+      x = "r squared values")
+
+bootstrap_r_plot
+```
+Most r-squared values for this bootstrap are concentrated between 0.91 and 0.92. 
+
+
+
+Confidence Intervals for r-squared
+```{r}
+bootstrap_r_intervals = 
+  weather_df %>% 
+    bootstrap(n = 5000, id = "id") %>% 
+   mutate(
+    models = map(strap, ~ lm(tmax ~ tmin, data = .x)),
+    results = map(models, broom::glance)) %>% 
+  select(id, results) %>% 
+  unnest(results) %>% 
+  summarize(
+    r_ci_lower = quantile(r.squared, 0.025), 
+    r_ci_upper = quantile(r.squared, 0.975)) %>% 
+  knitr::kable(digits = 3)
+
+bootstrap_r_intervals
+```
+
+Confidence Intervals for log of intercept multiplied by beta 1
+```{r}
+bootstrap_beta_intervals = 
+  weather_df %>% 
+    bootstrap(n = 5000, id = "id") %>% 
+   mutate(
+    models = map(strap, ~ lm(tmax ~ tmin, data = .x)),
+    results = map(models, broom::tidy)) %>% 
+  select(id, results) %>% 
+  unnest(results) %>%
+  select(id, term, estimate) %>% 
+  group_by(id) %>% 
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  ) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    beta_log = log(intercept * tmin)
+  ) %>% 
+  ungroup(id) %>% 
+  summarize(
+    bl_ci_lower = quantile(beta_log, 0.025), 
+    bl_ci_upper = quantile(beta_log, 0.975)) %>% 
+  knitr::kable(digits = 3)
+
+bootstrap_beta_intervals
 ```
 
